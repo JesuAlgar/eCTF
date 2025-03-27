@@ -19,16 +19,15 @@ def gen_secrets(channels: list[int]) -> bytes:
     # Generate master key (32 bytes for AES-256)
     master_key = os.urandom(32)
     
-    # Derive channel-specific keys using CMAC as specified in the PDF
-    # In practice we're simulating CMAC with HMAC-SHA256 since it's more available
+    # Derive channel-specific keys using HMAC-SHA256
     channel_keys = {}
     for channel in channels:
-        h_obj = hmac.HMAC(master_key, hashlib.sha256(), digestmod=hashlib.sha256)
+        h_obj = hmac.HMAC(master_key, digestmod=hashlib.sha256)
         h_obj.update(f"channel_{channel}".encode())
         channel_keys[channel] = h_obj.finalize()
     
-    # Derive MAC key as per PDF spec (using the master key)
-    h_obj = hmac.HMAC(master_key, hashlib.sha256(), digestmod=hashlib.sha256)
+    # Derive MAC key
+    h_obj = hmac.HMAC(master_key, digestmod=hashlib.sha256)
     h_obj.update(b"mac_key")
     mac_key = h_obj.finalize()
     
