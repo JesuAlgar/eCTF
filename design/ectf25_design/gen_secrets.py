@@ -24,12 +24,12 @@ def gen_secrets(channels: list[int]) -> bytes:
     for channel in channels:
         h_obj = hmac.HMAC(master_key, digestmod=hashlib.sha256)
         h_obj.update(f"channel_{channel}".encode())
-        channel_keys[channel] = h_obj.finalize()
+        channel_keys[channel] = h_obj.digest()  # Cambiado de finalize() a digest()
     
     # Derive MAC key
     h_obj = hmac.HMAC(master_key, digestmod=hashlib.sha256)
     h_obj.update(b"mac_key")
-    mac_key = h_obj.finalize()
+    mac_key = h_obj.digest()  # Cambiado de finalize() a digest()
     
     # Create secrets dictionary
     secrets = {
