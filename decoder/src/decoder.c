@@ -94,6 +94,9 @@
  /* Define the decoder ID - This should come from actual hardware or configuration */
  #define THIS_DECODER_ID 0x87654321
  
+ /* Helper function to create debug strings */
+ static char debug_buffer[256];
+ 
  #pragma pack(push, 1)
  typedef struct {
      channel_id_t channel;
@@ -155,7 +158,6 @@
  int verify_subscription_hmac(secure_subscription_update_packet_t *update) {
      Hmac hmac;
      uint8_t computed_hmac[HMAC_SIZE];
-     size_t data_len = sizeof(secure_subscription_update_packet_t) - HMAC_SIZE;
      
      wc_HmacInit(&hmac, NULL, INVALID_DEVID);
      wc_HmacSetKey(&hmac, SHA256, decoder_status.secrets.mac_key, KEY_SIZE);
@@ -243,6 +245,35 @@
      return 0;
  }
  
+ // Reemplazando la función AesCtrEncrypt que no está disponible
+ void custom_aes_ctr_encrypt(Aes* aes, uint8_t* out, const uint8_t* in, size_t len) {
+     uint8_t counter[16] = {0};
+     uint8_t encBuf[16];
+     size_t i, j;
+     
+     // Extraer el IV inicial 
+     uint8_t iv[16];
+     wc_AesGetIV(aes, iv);
+     
+     // Inicializar contador con IV
+     memcpy(counter, iv, 16);
+     
+     for (i = 0; i < len; i += 16) {
+         // Cifrar el contador
+         wc_AesEncryptDirect(aes, encBuf, counter);
+         
+         // XOR con el texto plano para obtener el texto cifrado
+         for (j = 0; j < 16 && (i + j) < len; j++) {
+             out[i + j] = in[i + j] ^ encBuf[j];
+         }
+         
+         // Incrementar el contador
+         for (j = 15; j >= 0; j--) {
+             if (++counter[j]) break;
+         }
+     }
+ }
+ 
  int decode(pkt_len_t pkt_len, secure_frame_packet_t *new_frame) {
      Hmac hmac;
      Aes aes;
@@ -315,14 +346,17 @@
      
      // Prepare nonce for AES-CTR decryption
      // Combining channel, timestamp and seq number as per PDF section 1.3
+     memset(nonce, 0, sizeof(nonce));
      memcpy(nonce, &new_frame->channel, sizeof(channel_id_t));
      memcpy(nonce + sizeof(channel_id_t), &new_frame->timestamp, sizeof(timestamp_t));
      memcpy(nonce + sizeof(channel_id_t) + sizeof(timestamp_t), &new_frame->seq_num, 4); // Using part of seq_num
      
-     // Decrypt frame using AES-CTR
+     // Decrypt frame using AES-CTR (custom implementation)
      wc_AesInit(&aes, NULL, INVALID_DEVID);
      wc_AesSetKey(&aes, channel_key, KEY_SIZE, nonce, AES_ENCRYPTION);
-     wc_AesCtrEncrypt(&aes, decrypted_frame, new_frame->encrypted_frame, sizeof(new_frame->encrypted_frame));
+     
+     // Usar nuestra implementación personalizada de AES-CTR ya que wc_AesCtrEncrypt no está disponible
+     custom_aes_ctr_encrypt(&aes, decrypted_frame, new_frame->encrypted_frame, sizeof(new_frame->encrypted_frame));
      wc_AesFree(&aes);
      
      // Extract only the frame portion (without TS and seq_num)
@@ -405,11 +439,15 @@
      
      init();
      
-     print_debug("Secure Decoder Booted!\n");
-     print_debug("Decoder ID: 0x%08X\n", decoder_status.decoder_id);
+     // Imprimir mensaje de inicio simple sin formato
+     print_debug("Secure Decoder Booted!");
+     
+     // Para formatear el ID, crear una cadena formateada primero
+     sprintf(debug_buffer, "Decoder ID: 0x%08X", decoder_status.decoder_id);
+     print_debug(debug_buffer);
      
      while (1) {
-         print_debug("Ready\n");
+         print_debug("Ready");
          STATUS_LED_GREEN();
          
          result = read_packet(&cmd, uart_buf, &pkt_len);
