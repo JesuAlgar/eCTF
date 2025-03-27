@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import json
 import struct
@@ -25,17 +26,42 @@ def gen_subscription(
     channel_keys = {int(k): base64.b64decode(v) for k, v in secrets_dict["channel_keys"].items()}
     mac_key = base64.b64decode(secrets_dict["mac_key"])
     
-    # Validate channel
-    if channel not in secrets_dict["channels"]:
-        raise ValueError("Invalid channel")
+    # Fixed encoder ID for this example (should be read from configuration in a real system)
+    encoder_id = 0x12345678
     
-    # Generate HMAC for subscription validation
+    # Validate channel
+    if channel not in secrets_dict["channels"] and channel != 0:
+        raise ValueError(f"Invalid channel {channel}")
+    
+    if channel == 0:
+        raise ValueError("Cannot subscribe to emergency channel")
+    
+    # Generate HMAC for subscription validation (aligns with PDF section 1.2)
+    # PDF shows: GenSubscription(T_fin, T_inicio, [CH_ID], DECODER_ID, ENCODER_ID)
     h = hmac.new(mac_key, digestmod=hashlib.sha256)
-    h.update(struct.pack("<IQQI", device_id, start, end, channel))
+    
+    # Include all fields in C_SUBS for HMAC calculation
+    h.update(struct.pack("<I", channel))        # Channel ID
+    h.update(struct.pack("<I", device_id))      # Decoder ID 
+    h.update(struct.pack("<I", encoder_id))     # Encoder ID
+    h.update(struct.pack("<Q", start))          # Start timestamp (T_inicio)
+    h.update(struct.pack("<Q", end))            # End timestamp (T_fin)
+    
     subscription_hmac = h.digest()
     
-    # Pack the subscription with HMAC
-    return struct.pack("<IIQQQ", channel, device_id, start, end, int.from_bytes(subscription_hmac, 'little'))
+    # Create the subscription packet according to PDF format
+    # Using the structure described in decoder.c: secure_subscription_update_packet_t
+    subscription_packet = struct.pack("<IIQQQ", 
+                                    channel,
+                                    device_id, 
+                                    start, 
+                                    end,
+                                    encoder_id)
+    
+    # Add the HMAC for integrity verification
+    subscription_packet += subscription_hmac
+    
+    return subscription_packet
 
 def parse_args():
     """Define and parse the command line arguments"""
