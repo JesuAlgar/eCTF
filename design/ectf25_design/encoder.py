@@ -24,10 +24,20 @@ class Encoder:
         
         # Initialize sequence number tracking
         self.seq_numbers = {}
+<<<<<<< HEAD
 
     def encode(self, channel: int, frame: bytes, timestamp: int) -> bytes:
         """
         Encode a frame with security measures
+=======
+        
+        # Encoder ID - This should be a unique identifier
+        self.encoder_id = 0x12345678  # Example value, ideally should be read from configuration
+
+    def encode(self, channel: int, frame: bytes, timestamp: int) -> bytes:
+        """
+        Encode a frame with security measures according to the PDF schema
+>>>>>>> a10b08d2995248328ea156a9d864c38ae384ec8e
 
         :param channel: 32b unsigned channel number
         :param frame: Frame to encode. Max frame size is 64 bytes.
@@ -45,6 +55,7 @@ class Encoder:
         seq_num = self.seq_numbers.get(channel, 0) + 1
         self.seq_numbers[channel] = seq_num
         
+<<<<<<< HEAD
         # Create nonce from channel, timestamp, and sequence number
         nonce = struct.pack("<IQQ", channel, timestamp, seq_num)
         
@@ -61,6 +72,73 @@ class Encoder:
         
         # Final packet structure: channel | timestamp | encrypted_frame | mac | seq_num
         return struct.pack("<IQ", channel, timestamp) + encrypted_frame + frame_mac + struct.pack("<Q", seq_num)
+=======
+        # Create nonce from channel, timestamp, and sequence number (20 bytes)
+        nonce = struct.pack("<IQQ", channel, timestamp, seq_num)
+        
+        # Perform AES-CTR encryption on the frame with timestamp and seq_num
+        # This aligns with PDF structure: AES-CTR(K1, #SEQ || CH_ID) → [FRAME || TS || #SEQ]
+        frame_with_metadata = frame.ljust(64, b'\0') + struct.pack("<Q", timestamp) + struct.pack("<Q", seq_num)
+        
+        cipher = Cipher(algorithms.AES(channel_key), modes.CTR(nonce[:16]), backend=default_backend())
+        encryptor = cipher.encryptor()
+        encrypted_frame = encryptor.update(frame_with_metadata) + encryptor.finalize()
+        
+        # Generate HMAC for authentication (includes all required fields from section 1.3 of PDF)
+        h = hmac.new(self.mac_key, digestmod=hashlib.sha256)
+        h.update(struct.pack("<I", channel))
+        h.update(struct.pack("<Q", timestamp))
+        h.update(encrypted_frame)
+        h.update(struct.pack("<Q", seq_num))
+        h.update(struct.pack("<I", self.encoder_id))  # Add encoder_id for authenticity check
+        frame_mac = h.digest()
+        
+        # Final packet structure combining header and encrypted content
+        # (#SEQ || CH_ID || ENCODER_ID)|| [C_SUBS] || [FRAME || TS || #SEQ]
+        # Note: We're not implementing the C_SUBS part here as that would be handled separately in gen_subscription.py
+        
+        return struct.pack("<IQI", channel, timestamp, self.encoder_id) + encrypted_frame + frame_mac + struct.pack("<Q", seq_num)
+
+    def generate_subscription(self, device_id: int, channel: int, start_timestamp: int, end_timestamp: int) -> bytes:
+        """
+        Generate a subscription packet for a decoder
+        
+        :param device_id: The decoder ID
+        :param channel: Channel to subscribe to
+        :param start_timestamp: Start validity time
+        :param end_timestamp: End validity time
+        :returns: Subscription packet bytes
+        """
+        # Validate channel
+        if channel not in self.channel_keys and channel != 0:
+            raise ValueError("Invalid channel")
+        
+        if channel == 0:
+            raise ValueError("Cannot subscribe to emergency channel")
+            
+        # Create subscription data structure similar to the PDF's C_SUBS
+        # Sign with HMAC using mac_key
+        h = hmac.new(self.mac_key, digestmod=hashlib.sha256)
+        h.update(struct.pack("<I", channel))        # Channel ID
+        h.update(struct.pack("<I", device_id))      # Decoder ID
+        h.update(struct.pack("<I", self.encoder_id)) # Encoder ID
+        h.update(struct.pack("<Q", start_timestamp)) # Start timestamp
+        h.update(struct.pack("<Q", end_timestamp))  # End timestamp
+        subscription_hmac = h.digest()
+        
+        # Pack the subscription packet
+        subscription = struct.pack("<IIQQQ", 
+                                 channel, 
+                                 device_id, 
+                                 start_timestamp, 
+                                 end_timestamp,
+                                 int.from_bytes(subscription_hmac[:8], 'little'))  # Using first 8 bytes of HMAC
+        
+        # Additional HMAC for full subscription validation
+        subscription += subscription_hmac
+        
+        return subscription
+>>>>>>> a10b08d2995248328ea156a9d864c38ae384ec8e
 
 def main():
     """A test main to one-shot encode a frame"""
