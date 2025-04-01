@@ -5,12 +5,28 @@
  * Este decoder valida el código de suscripción (C_SUBS) y, si es válido,
  * procede a descifrar el frame recibido.
  *
- * El proceso se basa en:
- *   - Verificar la integridad del bloque de suscripción usando AES-CMAC con K_master.
- *   - Extraer y validar los parámetros de suscripción: decoder_id, start, end, channel, encoder_id.
- *   - Derivar una clave dinámica a partir de g_channel_key y [#SEQ, CH_ID] y descifrar el frame en AES-CTR.
+ * El paquete tiene la siguiente estructura:
+ *   Header (20 bytes): 
+ *      - seq (4 bytes)
+ *      - channel (4 bytes)
+ *      - encoder_id (4 bytes)
+ *      - ts (8 bytes)
  *
- * Basado en lo descrito en main.pdf :contentReference[oaicite:0]{index=0}&#8203;:contentReference[oaicite:1]{index=1} y en el firmware original :contentReference[oaicite:2]{index=2}&#8203;:contentReference[oaicite:3]{index=3}.
+ *   Suscripción (52 bytes):
+ *      - Payload de suscripción (36 bytes):
+ *           • decoder_id (4 bytes)
+ *           • start (4 bytes)
+ *           • end (4 bytes)
+ *           • channel (4 bytes)
+ *           • encoder_id (4 bytes)
+ *           • partial_key (16 bytes)
+ *      - MAC (16 bytes): Calculado con AES-CMAC sobre los 36 bytes del payload usando K_master.
+ *
+ *   Frame cifrado (24 bytes): Frame (8 bytes) + Trailer (16 bytes) cifrados en AES-CTR.
+ *
+ * El decoder realiza la validación de la suscripción (incluyendo la verificación de que
+ * el decoder_id sea 1, que el canal y encoder_id coincidan con el header, y que el timestamp
+ * esté en el rango [start, end]) y, si todo es correcto, deriva una clave dinámica y descifra el frame.
  */
 
  #include <wolfssl/options.h>
@@ -32,36 +48,26 @@
  #include "simple_uart.h"
  
  /* ------------------- CONSTANTES --------------------- */
- #define HEADER_SIZE      20
- /* C_SUBS: 36 bytes de payload + 16 bytes de MAC = 52 bytes */
- #define SUBS_PAYLOAD_SIZE 36
- #define SUBS_MAC_SIZE    16
- #define SUBS_TOTAL_SIZE  (SUBS_PAYLOAD_SIZE + SUBS_MAC_SIZE)  // 52
+ #define HEADER_SIZE         20
+ #define SUBS_PAYLOAD_SIZE   36    // Payload de suscripción (decoder_id, start, end, channel, encoder_id, partial_key)
+ #define SUBS_MAC_SIZE       16
+ #define SUBS_TOTAL_SIZE     (SUBS_PAYLOAD_SIZE + SUBS_MAC_SIZE)  // 52
  
- /* Frame: 8 bytes + 16 bytes trailer = 24 bytes */
- #define FRAME_SIZE       8
- #define TRAILER_SIZE     16
- #define CIPHER_SIZE      (FRAME_SIZE + TRAILER_SIZE) // 24
+ #define FRAME_SIZE          8
+ #define TRAILER_SIZE        16
+ #define CIPHER_SIZE         (FRAME_SIZE + TRAILER_SIZE) // 24
  
- /* Paquete total: 20 + 52 + 24 = 96 bytes */
- #define PACKET_MIN_SIZE  (HEADER_SIZE + SUBS_TOTAL_SIZE + CIPHER_SIZE)
+ #define PACKET_MIN_SIZE     (HEADER_SIZE + SUBS_TOTAL_SIZE + CIPHER_SIZE)
  
  /* Configuración de suscripciones en flash */
- #define MAX_CHANNEL_COUNT 8
- #define EMERGENCY_CHANNEL 0
+ #define MAX_CHANNEL_COUNT   8
+ #define EMERGENCY_CHANNEL   0
  #define DEFAULT_CHANNEL_TIMESTAMP 0xFFFFFFFFFFFFFFFFULL
- #define FLASH_FIRST_BOOT 0xDEADBEEF
- #define FLASH_STATUS_ADDR ((MXC_FLASH_MEM_BASE + MXC_FLASH_MEM_SIZE) - (2 * MXC_FLASH_PAGE_SIZE))
+ #define FLASH_FIRST_BOOT    0xDEADBEEF
+ #define FLASH_STATUS_ADDR   ((MXC_FLASH_MEM_BASE + MXC_FLASH_MEM_SIZE) - (2 * MXC_FLASH_PAGE_SIZE))
  
  /* Estructuras de host messaging */
  #pragma pack(push, 1)
- typedef struct {
-     uint32_t channel;
-     uint64_t timestamp;
-     uint8_t  data[FRAME_SIZE]; // 8 bytes de frame
- } frame_packet_t;
- 
- /* Estructura del header */
  typedef struct {
      uint32_t seq;
      uint32_t channel;
@@ -69,10 +75,7 @@
      uint64_t ts;
  } header_t;
  
- /* Estructura del payload de suscripción (36 bytes):
-  * Contiene 5 enteros de 4 bytes y un campo de 16 bytes.
-  * Orden: decoder_id, start_timestamp, end_timestamp, channel, encoder_id, partial_key
-  */
+ /* Estructura del payload de suscripción (36 bytes) */
  typedef struct {
      uint32_t decoder_id;
      uint32_t start;
@@ -117,15 +120,18 @@
  
  void boot_flag(void);
  int list_channels(void);
- int update_subscription(uint16_t pkt_len, void *update_packet); // no modificado para SUBSCRIBE CMD
+ /* update_subscription procesa comandos SUBSCRIBE enviados sin encriptar.
+    En este caso, se espera que el paquete tenga el mismo formato que
+    subscription_payload_t (los 36 bytes del payload de suscripción) */
+ int update_subscription(uint16_t pkt_len, void *update_packet);
  
  /* -------------- Claves globales --------------- */
- static uint8_t g_channel_key[32];  // Clave específica por canal (por ejemplo, 32 bytes)
+ static uint8_t g_channel_key[32];  // Clave específica por canal
  static uint8_t G_K_MASTER[16];     // Master key (K_master)
  
  /* -------------- Función de carga de claves --------------- */
  int load_secure_keys(void) {
-     /* Aquí se debería parsear "secure_decoder.json" para cargar channel_keys, etc.
+     /* Aquí se debería parsear "secure_decoder.json" para cargar las claves.
         Por brevedad, se usan valores mock. */
      memset(G_K_MASTER, 0xAB, 16);
      memset(g_channel_key, 0xCD, 32);
@@ -279,10 +285,10 @@
   *   - Parsea y valida los parámetros de suscripción.
   *   - Deriva una clave dinámica y descifra el frame con AES-CTR.
   *
-  * @param packet   Paquete recibido.
-  * @param packet_len  Longitud del paquete.
-  * @param frame_out  Salida: puntero al frame descifrado (8 bytes).
-  * @param frame_len_out Salida: longitud del frame (8 bytes).
+  * @param packet         Paquete recibido.
+  * @param packet_len     Longitud del paquete.
+  * @param frame_out      Salida: puntero al frame descifrado (8 bytes).
+  * @param frame_len_out  Salida: longitud del frame (8 bytes).
   * @return 0 si OK, -1 si error.
   */
  static int secure_process_packet(const uint8_t* packet, size_t packet_len,
@@ -305,7 +311,6 @@
      const uint8_t* subs_mac   = subs_block + SUBS_PAYLOAD_SIZE;
  
      uint8_t computed_mac[16];
-     /* Verificar integridad del bloque de suscripción usando K_master */
      if (aes_cmac(G_K_MASTER, 16, subs_block, SUBS_PAYLOAD_SIZE, computed_mac) != 0) {
          fprintf(stderr, "[decoder] ERROR: Falló cálculo de MAC de suscripción\n");
          return -1;
@@ -324,7 +329,7 @@
      /* Validar parámetros de suscripción:
         - El decoder_id debe ser 1 (valor asignado a este dispositivo)
         - El canal y encoder_id deben coincidir con los del header
-        - El timestamp debe estar entre start y end
+        - El timestamp (ts) debe estar dentro del rango [start, end] (se comparan como 32 bits)
      */
      if (sub_payload.decoder_id != 1) {
          fprintf(stderr, "[decoder] ERROR: decoder_id de suscripción (%u) no coincide con el esperado (1)\n",
@@ -341,7 +346,7 @@
                  sub_payload.encoder_id, hdr.encoder_id);
          return -1;
      }
-     if (hdr.ts < sub_payload.start || hdr.ts > sub_payload.end) {
+     if ((uint32_t)hdr.ts < sub_payload.start || (uint32_t)hdr.ts > sub_payload.end) {
          fprintf(stderr, "[decoder] ERROR: ts (%llu) fuera del rango de suscripción (%u - %u)\n",
                  (unsigned long long)hdr.ts, sub_payload.start, sub_payload.end);
          return -1;
@@ -349,9 +354,7 @@
      printf("[decoder] Parámetros de suscripción válidos\n");
      fflush(stdout);
  
-     /* 4. Derivar clave dinámica para descifrar el frame.
-        Se usa g_channel_key y se calcula dynamic_key = AES-CMAC(g_channel_key, [seq, channel] en LE)
-     */
+     /* 4. Derivar clave dinámica para descifrar el frame */
      uint8_t dynamic_key[16];
      uint8_t seq_channel[8];
      memcpy(seq_channel, &hdr.seq, 4);
@@ -369,12 +372,10 @@
      if (!ciphertext) return -1;
      memcpy(ciphertext, packet + offset, CIPHER_SIZE);
  
-     /* Nonce para AES-CTR: 8 ceros + secuencia en big-endian (8 bytes) */
      uint8_t nonce[16] = {0};
      store64_be(hdr.seq, nonce+8);
      aes_ctr_xcrypt(dynamic_key, 16, nonce, ciphertext, CIPHER_SIZE);
  
-     /* Extraer el frame: se asume que son los primeros 8 bytes */
      *frame_out = (uint8_t*)malloc(FRAME_SIZE);
      if (!*frame_out) {
          free(ciphertext);
@@ -401,14 +402,12 @@
          return -1;
      }
  
-     /* Enviar el frame descifrado al host */
      write_packet(DECODE_MSG, frame_plain, (uint16_t)frame_len);
      free(frame_plain);
      return 0;
  }
  
  /* -------------- is_subscribed() -------------- */
- /* (Función auxiliar para comandos LIST y actualización en flash) */
  int is_subscribed(uint32_t channel) {
      if (channel == EMERGENCY_CHANNEL) {
          return 1;
@@ -450,10 +449,12 @@
  }
  
  /* -------------- update_subscription() -------------- */
- /* Esta función procesa comandos de actualización de suscripción (no relacionados al paquete recibido) */
+ /**
+  * Esta función procesa comandos SUBSCRIBE enviados sin encriptar.
+  * Se espera que el paquete tenga el formato de subscription_payload_t (36 bytes).
+  */
  int update_subscription(uint16_t pkt_len, void *update_packet) {
-     /* Se asume que el formato del paquete de actualización es compatible con el firmware original */
-     subscription_update_packet_t *update = (subscription_update_packet_t*)update_packet;
+     subscription_payload_t *update = (subscription_payload_t*)update_packet;
  
      if (update->channel == EMERGENCY_CHANNEL) {
          STATUS_LED_RED();
@@ -467,8 +468,8 @@
          {
              decoder_status.subscribed_channels[i].active = true;
              decoder_status.subscribed_channels[i].id = update->channel;
-             decoder_status.subscribed_channels[i].start_timestamp = update->start_timestamp;
-             decoder_status.subscribed_channels[i].end_timestamp = update->end_timestamp;
+             decoder_status.subscribed_channels[i].start_timestamp = (uint64_t)update->start;
+             decoder_status.subscribed_channels[i].end_timestamp = (uint64_t)update->end;
              break;
          }
      }
