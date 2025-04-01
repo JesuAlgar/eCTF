@@ -3,15 +3,17 @@
 gen_subscription.py
 -------------------
 Genera el código de suscripción para un decodificador usando la clave específica por canal.
-El formato de la suscripción será de 52 bytes, formado por:
-   - Payload (36 bytes):
-       • decoder_id   (4 bytes, uint32)
-       • start        (4 bytes, uint32)
-       • end          (4 bytes, uint32)
-       • channel      (4 bytes, uint32)
-       • encoder_id   (4 bytes, uint32)
-       • partial_key  (16 bytes)
-   - MAC (16 bytes): Calculado usando AES-CMAC sobre el payload usando la clave específica del canal.
+El código de suscripción se genera a partir de:
+  - Payload (36 bytes): 
+      • decoder_id   (4 bytes, uint32)
+      • start        (4 bytes, uint32)
+      • end          (4 bytes, uint32)
+      • channel      (4 bytes, uint32)
+      • encoder_id   (4 bytes, uint32)
+      • partial_key  (16 bytes)
+  - MAC (16 bytes): Calculado usando AES-CMAC sobre el payload utilizando la clave específica del canal.
+
+La función **gen_subscription()** ahora convierte a entero el `decoder_id` si se pasa como cadena hexadecimal.
 """
 
 import argparse
@@ -31,22 +33,36 @@ def aes_cmac_python(key: bytes, data: bytes) -> bytes:
     c.update(data)
     return c.finalize()
 
-def gen_subscription(secrets: bytes, decoder_id: int, start: int, end: int, channel: int, encoder_id: int = 1) -> bytes:
+def gen_subscription(
+    secrets: bytes,
+    decoder_id,  # Puede ser int o cadena hexadecimal
+    start: int,
+    end: int,
+    channel: int,
+    encoder_id: int = 1  # Valor por defecto 1 si no se especifica
+) -> bytes:
     """
     Genera el contenido seguro de suscripción.
     
     Parámetros:
       - secrets: Contenido del archivo JSON generado por gen_secrets.py.
-      - decoder_id: ID del decoder (por ejemplo, 1).
+      - decoder_id: ID del decodificador (int o cadena en hexadecimal, e.g. "0x29c332cf").
       - start: Timestamp de inicio (uint32).
       - end: Timestamp de fin (uint32).
       - channel: Canal a suscribir.
-      - encoder_id: ID del encoder (default=1).
+      - encoder_id: ID del encoder (por defecto 1).
       
     Retorna:
       - Datos de suscripción de 52 bytes: payload (36 bytes) + MAC (16 bytes).
     """
     secrets_dict = json.loads(secrets)
+    
+    # Si decoder_id viene como cadena hexadecimal, lo convertimos a entero.
+    if isinstance(decoder_id, str):
+        if decoder_id.lower().startswith("0x"):
+            decoder_id = int(decoder_id, 16)
+        else:
+            decoder_id = int(decoder_id)
     
     # Validar que el canal sea válido
     if channel not in secrets_dict["channels"]:
@@ -91,18 +107,26 @@ def parse_args():
                         help="Ruta al archivo de secretos creado por gen_secrets.py")
     parser.add_argument("subscription_file", type=Path,
                         help="Archivo de salida para la suscripción")
-    parser.add_argument("decoder_id", type=int, help="ID del decoder (por ejemplo, 1)")
+    parser.add_argument("decoder_id", help="ID del decodificador (int o cadena hexadecimal, por ejemplo, '0x29c332cf')")
     parser.add_argument("start", type=lambda x: int(x, 0), help="Timestamp de inicio (uint32)")
     parser.add_argument("end", type=lambda x: int(x, 0), help="Timestamp de fin (uint32)")
     parser.add_argument("channel", type=int, help="Canal a suscribir")
-    # Se agrega el parámetro encoder_id con valor por defecto 1.
-    parser.add_argument("--encoder_id", type=int, default=1, help="ID del encoder (default=1)")
+    # El parámetro encoder_id es opcional y por defecto es 1.
+    parser.add_argument("encoder_id", type=int, nargs="?", default=1,
+                        help="ID del encoder (opcional, por defecto 1)")
     return parser.parse_args()
 
 def main():
     args = parse_args()
     try:
-        subscription = gen_subscription(args.secrets_file.read(), args.decoder_id, args.start, args.end, args.channel, args.encoder_id)
+        subscription = gen_subscription(
+            args.secrets_file.read(),
+            args.decoder_id,
+            args.start,
+            args.end,
+            args.channel,
+            args.encoder_id
+        )
     except Exception as e:
         print(f"Generate subscription {args.channel} failed!")
         raise e
