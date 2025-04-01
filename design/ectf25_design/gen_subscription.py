@@ -48,7 +48,7 @@ def gen_subscription(secrets: bytes, decoder_id: int, start: int, end: int, chan
     """
     secrets_dict = json.loads(secrets)
     
-    # Validar que el canal sea válido (se espera que secrets_dict["channels"] contenga los canales permitidos)
+    # Validar que el canal sea válido
     if channel not in secrets_dict["channels"]:
         raise ValueError(f"Invalid channel: {channel}")
     
@@ -58,7 +58,7 @@ def gen_subscription(secrets: bytes, decoder_id: int, start: int, end: int, chan
         raise ValueError("Channel key not found")
     channel_key = channel_keys[channel]
     
-    # Obtener la partial key para este decodificador a partir de secrets_dict["partial_keys"]
+    # Obtener la partial key para este decodificador desde "partial_keys"
     partial_keys = secrets_dict.get("partial_keys", {})
     key_name = f"decoder_{decoder_id}"
     if key_name not in partial_keys:
@@ -67,7 +67,7 @@ def gen_subscription(secrets: bytes, decoder_id: int, start: int, end: int, chan
     if len(partial_key) != 16:
         raise ValueError("Partial key must be 16 bytes")
     
-    # Empaquetar el payload de suscripción: decoder_id, start, end, channel, encoder_id, partial_key.
+    # Empaquetar el payload: decoder_id, start, end, channel, encoder_id, partial_key
     payload = struct.pack("<IIIII16s", decoder_id, start, end, channel, encoder_id, partial_key)
     if len(payload) != 36:
         raise ValueError("Payload length is not 36 bytes")
@@ -105,7 +105,6 @@ def main():
     except Exception as e:
         print(f"Generate subscription {args.channel} failed!")
         raise e
-    
     mode = "wb" if args.force else "xb"
     with open(args.subscription_file, mode) as f:
         f.write(subscription)
