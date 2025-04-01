@@ -31,7 +31,7 @@ def aes_cmac_python(key: bytes, data: bytes) -> bytes:
     c.update(data)
     return c.finalize()
 
-def gen_subscription(secrets: bytes, decoder_id: int, start: int, end: int, channel: int, encoder_id: int) -> bytes:
+def gen_subscription(secrets: bytes, decoder_id: int, start: int, end: int, channel: int, encoder_id: int = 1) -> bytes:
     """
     Genera el contenido seguro de suscripción.
     
@@ -41,7 +41,7 @@ def gen_subscription(secrets: bytes, decoder_id: int, start: int, end: int, chan
       - start: Timestamp de inicio (uint32).
       - end: Timestamp de fin (uint32).
       - channel: Canal a suscribir.
-      - encoder_id: ID del encoder.
+      - encoder_id: ID del encoder (default=1).
       
     Retorna:
       - Datos de suscripción de 52 bytes: payload (36 bytes) + MAC (16 bytes).
@@ -95,7 +95,8 @@ def parse_args():
     parser.add_argument("start", type=lambda x: int(x, 0), help="Timestamp de inicio (uint32)")
     parser.add_argument("end", type=lambda x: int(x, 0), help="Timestamp de fin (uint32)")
     parser.add_argument("channel", type=int, help="Canal a suscribir")
-    parser.add_argument("encoder_id", type=int, help="ID del encoder")
+    # Se agrega el parámetro encoder_id con valor por defecto 1.
+    parser.add_argument("--encoder_id", type=int, default=1, help="ID del encoder (default=1)")
     return parser.parse_args()
 
 def main():
